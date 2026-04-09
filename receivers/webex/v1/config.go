@@ -41,7 +41,7 @@ func NewConfig(jsonData json.RawMessage, decryptFn receivers.DecryptFunc) (Confi
 		settings.Message = templates.DefaultMessageEmbed
 	}
 
-	settings.Token = decryptFn("bot_token", settings.Token)
+	settings.Token = decryptFn.Get("bot_token", settings.Token)
 
 	u, err := url.Parse(settings.APIURL)
 	if err != nil {
@@ -52,7 +52,7 @@ func NewConfig(jsonData json.RawMessage, decryptFn receivers.DecryptFunc) (Confi
 	return settings, err
 }
 
-var Schema = schema.IntegrationSchemaVersion{
+var Schema = schema.NewIntegrationSchemaVersion(schema.IntegrationSchemaVersion{
 	Version:   Version,
 	CanCreate: true,
 	Options: []schema.Field{
@@ -63,6 +63,7 @@ var Schema = schema.IntegrationSchemaVersion{
 			Placeholder:  "https://api.ciscospark.com/v1/messages",
 			Description:  "API endpoint at which we'll send webhooks to.",
 			PropertyName: "api_url",
+			Protected:    true,
 		},
 		{
 			Label:        "Room ID",
@@ -92,4 +93,4 @@ var Schema = schema.IntegrationSchemaVersion{
 			PropertyName: "message",
 		},
 	},
-}
+})

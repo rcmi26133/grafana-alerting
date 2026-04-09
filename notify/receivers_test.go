@@ -20,6 +20,8 @@ import (
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	yamlv2 "gopkg.in/yaml.v2"
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/prometheus/alertmanager/notify"
 
@@ -30,6 +32,7 @@ import (
 	"github.com/grafana/alerting/receivers"
 	line "github.com/grafana/alerting/receivers/line/v1"
 	pushover "github.com/grafana/alerting/receivers/pushover/v1"
+	"github.com/grafana/alerting/receivers/schema"
 	telegram "github.com/grafana/alerting/receivers/telegram/v1"
 	receiversTesting "github.com/grafana/alerting/receivers/testing"
 	threema "github.com/grafana/alerting/receivers/threema/v1"
@@ -133,7 +136,8 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		bad := &models.IntegrationConfig{
 			UID:      "invalid-test",
 			Name:     "invalid-test",
-			Type:     "slack",
+			Type:     schema.SlackType,
+			Version:  schema.V1,
 			Settings: json.RawMessage(`{ "test" : "test" }`),
 		}
 		recCfg.Integrations = append(recCfg.Integrations, bad)
@@ -174,7 +178,7 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, recCfg.Name, parsed.Name)
 		for _, notifier := range recCfg.Integrations {
-			if notifier.Type == "prometheus-alertmanager" {
+			if notifier.Type == schema.AlertManagerType {
 				require.Equal(t, notifier.SecureSettings["basicAuthPassword"], parsed.AlertmanagerConfigs[0].Settings.Password)
 			}
 		}
@@ -188,7 +192,8 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		bad := &models.IntegrationConfig{
 			UID:      "test",
 			Name:     "test",
-			Type:     fmt.Sprintf("invalid-%d", rand.Uint32()),
+			Type:     schema.IntegrationType(fmt.Sprintf("invalid-%d", rand.Uint32())),
+			Version:  schema.V1,
 			Settings: json.RawMessage(`{ "test" : "test" }`),
 		}
 		recCfg.Integrations = append(recCfg.Integrations, bad)
@@ -200,7 +205,7 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		typedError := err.(IntegrationValidationError)
 		require.NotNil(t, typedError.Integration)
 		require.Equal(t, bad, typedError.Integration)
-		require.ErrorContains(t, err, fmt.Sprintf("notifier %s is not supported", bad.Type))
+		require.ErrorContains(t, err, fmt.Sprintf("invalid integration type: %s", bad.Type))
 	})
 	t.Run("should recognize all known types", func(t *testing.T) {
 		recCfg := &APIReceiver{ConfigReceiver: ConfigReceiver{Name: "test-receiver"}}
@@ -211,7 +216,7 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, recCfg.Name, parsed.Name)
 
-		expectedNotifiers := make(map[string]struct{})
+		expectedNotifiers := make(map[schema.IntegrationType]struct{})
 		for _, notifier := range recCfg.Integrations {
 			expectedNotifiers[notifier.Type] = struct{}{}
 		}
@@ -236,7 +241,7 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 				require.NotEmptyf(t, meta.Name, "%s notifier (idx: %d) '%s' uid: '%s'.", meta.Type, idx, meta.Name, meta.UID)
 				var notifierRaw *models.IntegrationConfig
 				for _, receiver := range recCfg.Integrations {
-					if receiver.Type == meta.Type && receiver.UID == meta.UID && receiver.Name == meta.Name {
+					if receiver.Type == meta.Type && receiver.UID == meta.UID && receiver.Name == meta.Name && receiver.Version == meta.Version {
 						notifierRaw = receiver
 						break
 					}
@@ -250,13 +255,13 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		recCfg := &APIReceiver{ConfigReceiver: ConfigReceiver{Name: "test-receiver"}}
 		for _, cfg := range notifytest.AllKnownV1ConfigsForTesting {
 			notifierRaw := cfg.GetRawNotifierConfig("")
-			notifierRaw.Type = strings.ToUpper(notifierRaw.Type)
+			notifierRaw.Type = schema.IntegrationType(strings.ToUpper(string(notifierRaw.Type)))
 			recCfg.Integrations = append(recCfg.Integrations, cfg.GetRawNotifierConfig(""))
 		}
 		parsed, err := BuildReceiverConfiguration(context.Background(), recCfg, DecodeSecretsFromBase64, decrypt)
 		require.NoError(t, err)
 
-		expectedNotifiers := make(map[string]struct{})
+		expectedNotifiers := make(map[schema.IntegrationType]struct{})
 		for _, notifier := range recCfg.Integrations {
 			expectedNotifiers[notifier.Type] = struct{}{}
 		}
@@ -273,19 +278,56 @@ func TestBuildReceiverConfiguration(t *testing.T) {
 		}
 		require.Empty(t, expectedNotifiers, "not all expected notifiers were found in the parsed configuration")
 	})
+	t.Run("should resolve type alias", func(t *testing.T) {
+		// "line" is an alias for schema.LineType ("LINE")
+		cfg := notifytest.AllKnownV1ConfigsForTesting[schema.LineType]
+		raw := cfg.GetRawNotifierConfig("")
+		raw.Type = "line" // alias, not canonical type
+		recCfg := &APIReceiver{
+			ConfigReceiver: ConfigReceiver{Name: "test-receiver"},
+			ReceiverConfig: models.ReceiverConfig{Integrations: []*models.IntegrationConfig{raw}},
+		}
+		parsed, err := BuildReceiverConfiguration(context.Background(), recCfg, DecodeSecretsFromBase64, decrypt)
+		require.NoError(t, err)
+		require.Len(t, parsed.LineConfigs, 1)
+	})
+	t.Run("should reject invalid version", func(t *testing.T) {
+		cfg := notifytest.AllKnownV1ConfigsForTesting[schema.WebhookType]
+		raw := cfg.GetRawNotifierConfig("")
+		raw.Version = "v99"
+		recCfg := &APIReceiver{
+			ConfigReceiver: ConfigReceiver{Name: "test-receiver"},
+			ReceiverConfig: models.ReceiverConfig{Integrations: []*models.IntegrationConfig{raw}},
+		}
+		_, err := BuildReceiverConfiguration(context.Background(), recCfg, DecodeSecretsFromBase64, decrypt)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "invalid version v99")
+	})
+	t.Run("should reject non-V1 version", func(t *testing.T) {
+		cfg := notifytest.AllKnownV1ConfigsForTesting[schema.TeamsType]
+		raw := cfg.GetRawNotifierConfig("")
+		raw.Version = schema.V0mimir1
+		recCfg := &APIReceiver{
+			ConfigReceiver: ConfigReceiver{Name: "test-receiver"},
+			ReceiverConfig: models.ReceiverConfig{Integrations: []*models.IntegrationConfig{raw}},
+		}
+		_, err := BuildReceiverConfiguration(context.Background(), recCfg, DecodeSecretsFromBase64, decrypt)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "invalid receiver version")
+	})
 }
 
 func TestHTTPConfig(t *testing.T) {
 	for notifierType, cfg := range notifytest.AllKnownV1ConfigsForTesting {
 		t.Run(string(notifierType), func(t *testing.T) {
-			if notifierType == "email" {
+			if notifierType == schema.EmailType {
 				t.Skip("does not support http_config")
 			}
 
-			if notifierType == "slack" ||
-				notifierType == "sns" ||
-				notifierType == "mqtt" ||
-				notifierType == "prometheus-alertmanager" {
+			if notifierType == schema.SlackType ||
+				notifierType == schema.SNSType ||
+				notifierType == schema.MQTTType ||
+				notifierType == schema.AlertManagerType {
 				t.Skip("does not yet support http client")
 			}
 
@@ -577,4 +619,41 @@ func allReceivers(r *GrafanaReceiverConfig) ([]NotifierConfig[any], int) {
 		recvs = append(recvs, configs...)
 	}
 	return recvs, missing
+}
+
+// TestReceiver_JSONRoundTrip verifies JSON marshal/unmarshal roundtrip for a
+// receiver with all integration types, using MarshalJSONWithSecrets to
+// preserve secret values in plain text.
+func TestReceiver_JSONRoundTrip(t *testing.T) {
+	original := notifytest.FullValidMimirReceiver()
+
+	integrations, err := ConfigReceiverToMimirIntegrations(original)
+	require.NoError(t, err)
+	for _, integration := range integrations {
+		t.Run(fmt.Sprintf("%s %s", integration.Schema.Type(), integration.Schema.Version), func(t *testing.T) {
+			data, err := integration.ConfigJSON()
+			require.NoError(t, err)
+
+			t.Run("JSON unmarshaled by JSON", func(t *testing.T) {
+				got := reflect.New(reflect.TypeOf(integration.Config)).Interface()
+				require.NoError(t, json.Unmarshal(data, got))
+
+				require.Equal(t, integration.Config, reflect.ValueOf(got).Elem().Interface())
+			})
+
+			t.Run("JSON unmarshaled by YAML v2", func(t *testing.T) {
+				got := reflect.New(reflect.TypeOf(integration.Config)).Interface()
+				require.NoError(t, yamlv2.Unmarshal(data, got))
+
+				require.Equal(t, integration.Config, reflect.ValueOf(got).Elem().Interface())
+			})
+
+			t.Run("JSON unmarshaled by YAML v3", func(t *testing.T) {
+				got := reflect.New(reflect.TypeOf(integration.Config)).Interface()
+				require.NoError(t, yamlv3.Unmarshal(data, got))
+
+				require.Equal(t, integration.Config, reflect.ValueOf(got).Elem().Interface())
+			})
+		})
+	}
 }

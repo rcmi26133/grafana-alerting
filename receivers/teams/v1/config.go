@@ -6,6 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/grafana/alerting/receivers"
 	"github.com/grafana/alerting/receivers/schema"
 	"github.com/grafana/alerting/templates"
 )
@@ -19,7 +20,7 @@ type Config struct {
 	SectionTitle string `json:"sectiontitle,omitempty" yaml:"sectiontitle,omitempty"`
 }
 
-func NewConfig(jsonData json.RawMessage) (Config, error) {
+func NewConfig(jsonData json.RawMessage, _ receivers.DecryptFunc) (Config, error) {
 	settings := Config{}
 	err := json.Unmarshal(jsonData, &settings)
 	if err != nil {
@@ -37,7 +38,7 @@ func NewConfig(jsonData json.RawMessage) (Config, error) {
 	return settings, nil
 }
 
-var Schema = schema.IntegrationSchemaVersion{
+var Schema = schema.NewIntegrationSchemaVersion(schema.IntegrationSchemaVersion{
 	Version:   Version,
 	CanCreate: true,
 	Options: []schema.Field{
@@ -48,6 +49,7 @@ var Schema = schema.IntegrationSchemaVersion{
 			Placeholder:  "Teams incoming webhook url",
 			PropertyName: "url",
 			Required:     true,
+			Protected:    true,
 		},
 		{
 			Label:        "Title",
@@ -71,4 +73,4 @@ var Schema = schema.IntegrationSchemaVersion{
 			PropertyName: "message",
 		},
 	},
-}
+})

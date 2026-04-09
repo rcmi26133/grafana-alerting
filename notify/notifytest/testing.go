@@ -8,22 +8,22 @@ import (
 	"strings"
 	"testing"
 
-	promCfg "github.com/prometheus/alertmanager/config"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/alerting/definition"
+	"github.com/grafana/alerting/http/v0mimir/v0mimirtest"
 )
 
 // ForEachIntegrationTypeReceiver runs the given function for each integration type.
-func ForEachIntegrationTypeReceiver(t *testing.T, f func(configType reflect.Type, receiver promCfg.Receiver, rawConfig string)) {
+func ForEachIntegrationTypeReceiver(t *testing.T, f func(configType reflect.Type, receiver definition.Receiver, rawConfig string)) {
 	t.Helper()
 	keys := slices.SortedFunc(maps.Keys(AllValidMimirConfigs), func(r reflect.Type, r2 reflect.Type) int {
 		return strings.Compare(r.Name(), r2.Name())
 	})
 	for _, iType := range keys {
-		cfg, err := GetRawConfigForMimirIntegration(iType, WithDefault)
+		cfg, err := GetRawConfigForMimirIntegration(iType, v0mimirtest.WithDefault)
 		require.NoError(t, err)
-		r, err := GetMimirReceiverWithIntegrations([]reflect.Type{iType}, WithDefault)
+		r, err := GetMimirReceiverWithIntegrations([]reflect.Type{iType}, v0mimirtest.WithDefault)
 		require.NoError(t, err)
 		f(iType, r, cfg)
 	}

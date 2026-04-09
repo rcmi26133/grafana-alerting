@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prometheus/alertmanager/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/alerting/http/v0mimir/v0mimirtest"
 	"github.com/grafana/alerting/notify/notifytest"
 	"github.com/grafana/alerting/receivers/alertmanager"
 	"github.com/grafana/alerting/receivers/dingding"
@@ -84,7 +84,7 @@ func TestGetSecretKeysForContactPointType(t *testing.T) {
 		{receiverType: mqtt.Type, version: schema.V1, expectedSecretFields: []string{"password", "tlsConfig.caCertificate", "tlsConfig.clientCertificate", "tlsConfig.clientKey"}},
 		{receiverType: jira.Type, version: schema.V1, expectedSecretFields: []string{"user", "password", "api_token"}},
 		{receiverType: victorops.Type, version: schema.V0mimir1, expectedSecretFields: append([]string{"api_key"}, httpConfigSecrets...)},
-		{receiverType: sns.Type, version: schema.V0mimir1, expectedSecretFields: append([]string{"sigv4.SecretKey"}, httpConfigSecrets...)},
+		{receiverType: sns.Type, version: schema.V0mimir1, expectedSecretFields: append([]string{"sigv4.secret_key"}, httpConfigSecrets...)},
 		{receiverType: telegram.Type, version: schema.V0mimir1, expectedSecretFields: append([]string{"token"}, httpConfigSecrets...)},
 		{receiverType: discord.Type, version: schema.V0mimir1, expectedSecretFields: append([]string{"webhook_url"}, httpConfigSecrets...)},
 		{receiverType: pagerduty.Type, version: schema.V0mimir1, expectedSecretFields: append([]string{"routing_key", "service_key"}, httpConfigSecrets...)},
@@ -146,7 +146,7 @@ func TestGetAvailableNotifiers(t *testing.T) {
 	for _, notifier := range n {
 		t.Run(fmt.Sprintf("integration %s [%s]", notifier.Type, notifier.Name), func(t *testing.T) {
 			currentVersion := schema.V1
-			if notifier.Type == "wechat" {
+			if notifier.Type == schema.WeChatType {
 				currentVersion = schema.V0mimir1
 			}
 			t.Run(fmt.Sprintf("current version is %s", currentVersion), func(t *testing.T) {
@@ -279,8 +279,9 @@ func TestOriginalTypeForAlias(t *testing.T) {
 func TestV0IntegrationsSecrets(t *testing.T) {
 	// This test ensures that all known integrations' secrets are listed in the schema definition.
 	notifytest.ForEachIntegrationType(t, func(configType reflect.Type) {
-		t.Run(configType.Name(), func(t *testing.T) {
-			integrationType := schema.IntegrationType(strings.ToLower(strings.TrimSuffix(configType.Name(), "Config")))
+		integrationType, ok := v0integrationTypeToIntegrationType[configType]
+		require.Truef(t, ok, "v0 integration type not found for %s", configType)
+		t.Run(string(integrationType), func(t *testing.T) {
 			iSchema, ok := GetSchemaForIntegration(integrationType)
 			require.Truef(t, ok, "schema for %s not found", integrationType)
 			var version schema.IntegrationSchemaVersion
@@ -297,7 +298,7 @@ func TestV0IntegrationsSecrets(t *testing.T) {
 				expectedSecrets = append(expectedSecrets, path.String())
 			}
 			var secrets []string
-			for option := range maps.Keys(notifytest.ValidMimirHTTPConfigs) {
+			for option := range maps.Keys(v0mimirtest.ValidMimirHTTPConfigs) {
 				cfg, err := notifytest.GetMimirIntegrationForType(configType, option)
 				require.NoError(t, err)
 				data, err := json.Marshal(cfg)
@@ -320,13 +321,13 @@ func TestIntegrationTypeFromMimirType(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, email.Type, actual)
 
-	actual, err = IntegrationTypeFromMimirType(config.MSTeamsConfig{})
+	actual, err = IntegrationTypeFromMimirType(teamsV0Mimir1.Config{})
 	require.NoError(t, err)
-	require.Equal(t, teamsV0Mimir1.Schema.TypeAlias, actual)
+	require.Equal(t, teamsV0Mimir1.TypeAlias, actual)
 
-	actual, err = IntegrationTypeFromMimirType(&config.MSTeamsV2Config{})
+	actual, err = IntegrationTypeFromMimirType(&teamsV0Mimir2.Config{})
 	require.NoError(t, err)
-	require.Equal(t, teamsV0Mimir2.Schema.TypeAlias, actual)
+	require.Equal(t, teamsV0Mimir2.TypeAlias, actual)
 
 	t.Run("error on unknown type", func(t *testing.T) {
 		_, err = IntegrationTypeFromMimirType(1)
@@ -339,11 +340,8 @@ func TestIntegrationTypeFromMimirType(t *testing.T) {
 
 	// This test ensures that all known integrations' secrets are listed in the schema definition.
 	notifytest.ForEachIntegrationType(t, func(configType reflect.Type) {
-		name := configType.Name()
-		expected := strings.ToLower(strings.TrimSuffix(name, "Config"))
-		actual, err := IntegrationTypeFromMimirTypeReflect(configType)
+		_, err := IntegrationTypeFromMimirTypeReflect(configType)
 		require.NoError(t, err)
-		require.Equal(t, schema.IntegrationType(expected), actual)
 	})
 }
 

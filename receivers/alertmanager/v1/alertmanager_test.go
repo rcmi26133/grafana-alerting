@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/go-kit/log"
 	"github.com/prometheus/alertmanager/notify"
@@ -18,6 +19,14 @@ import (
 	"github.com/grafana/alerting/receivers"
 	receiversTesting "github.com/grafana/alerting/receivers/testing"
 )
+
+type mockSender struct {
+	sendHTTPReqFunc func(context.Context, *url.URL, receivers.HTTPCfg) ([]byte, error)
+}
+
+func (m *mockSender) SendHTTPRequest(ctx context.Context, url *url.URL, cfg receivers.HTTPCfg) ([]byte, error) {
+	return m.sendHTTPReqFunc(ctx, url, cfg)
+}
 
 func TestNotify(t *testing.T) {
 	imageProvider := images.NewFakeProvider(1)
@@ -75,22 +84,23 @@ func TestNotify(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			mock := &mockSender{
+				sendHTTPReqFunc: func(_ context.Context, _ *url.URL, cfg receivers.HTTPCfg) ([]byte, error) {
+					expBody, err := json.Marshal(c.alerts)
+					require.NoError(t, err)
+					require.JSONEq(t, string(expBody), string(cfg.Body))
+					assert.Equal(t, c.settings.User, cfg.User)
+					assert.Equal(t, c.settings.Password, cfg.Password)
+					return nil, c.sendHTTPRequestError
+				},
+			}
+
 			sn := &Notifier{
 				Base:     receivers.NewBase(receivers.Metadata{}, log.NewNopLogger()),
 				images:   imageProvider,
 				settings: c.settings,
-			}
-
-			var body []byte
-			origSendHTTPRequest := receivers.SendHTTPRequest
-			t.Cleanup(func() {
-				receivers.SendHTTPRequest = origSendHTTPRequest
-			})
-			receivers.SendHTTPRequest = func(_ context.Context, _ *url.URL, cfg receivers.HTTPCfg, _ log.Logger) ([]byte, error) {
-				body = cfg.Body
-				assert.Equal(t, c.settings.User, cfg.User)
-				assert.Equal(t, c.settings.Password, cfg.Password)
-				return nil, c.sendHTTPRequestError
+				logger:   log.NewNopLogger(),
+				sender:   mock,
 			}
 
 			ctx := notify.WithGroupKey(context.Background(), "alertname")
@@ -103,9 +113,6 @@ func TestNotify(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.True(t, ok)
-				expBody, err := json.Marshal(c.alerts)
-				require.NoError(t, err)
-				require.JSONEq(t, string(expBody), string(body))
 			}
 		})
 	}
@@ -122,22 +129,22 @@ func TestNotify(t *testing.T) {
 			}
 		}
 
+		var body []byte
+		mock := &mockSender{
+			sendHTTPReqFunc: func(_ context.Context, _ *url.URL, cfg receivers.HTTPCfg) ([]byte, error) {
+				body = cfg.Body
+				return nil, nil
+			},
+		}
+
 		sn := &Notifier{
 			Base:     receivers.NewBase(receivers.Metadata{}, log.NewNopLogger()),
 			images:   imageProvider,
 			settings: singleURLConfig,
+			logger:   log.NewNopLogger(),
+			sender:   mock,
 		}
 		alerts := getAlerts()
-
-		origSendHTTPRequest := receivers.SendHTTPRequest
-		t.Cleanup(func() {
-			receivers.SendHTTPRequest = origSendHTTPRequest
-		})
-		var body []byte
-		receivers.SendHTTPRequest = func(_ context.Context, _ *url.URL, cfg receivers.HTTPCfg, _ log.Logger) ([]byte, error) {
-			body = cfg.Body
-			return nil, nil
-		}
 
 		ctx := notify.WithGroupKey(context.Background(), "alertname")
 		ctx = notify.WithGroupLabels(ctx, model.LabelSet{"alertname": ""})
@@ -150,5 +157,47 @@ func TestNotify(t *testing.T) {
 		expectedBody, err := json.Marshal(expectedAlerts)
 		require.NoError(t, err)
 		require.JSONEq(t, string(expectedBody), string(body))
+	})
+
+	t.Run("preserves generator URL and timestamps", func(t *testing.T) {
+		start := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Millisecond)
+		end := time.Now().Add(10 * time.Minute).UTC().Truncate(time.Millisecond)
+		genURL := "https://example.com/gen/abc123"
+		alerts := []*types.Alert{
+			{
+				Alert: model.Alert{
+					Labels:       model.LabelSet{"alertname": "timed"},
+					Annotations:  model.LabelSet{"note": "has times"},
+					StartsAt:     start,
+					EndsAt:       end,
+					GeneratorURL: genURL,
+				},
+			},
+		}
+		var body []byte
+		mock := &mockSender{
+			sendHTTPReqFunc: func(_ context.Context, _ *url.URL, cfg receivers.HTTPCfg) ([]byte, error) {
+				body = cfg.Body
+				return nil, nil
+			},
+		}
+		sn := &Notifier{
+			Base:     receivers.NewBase(receivers.Metadata{}, log.NewNopLogger()),
+			images:   imageProvider,
+			settings: singleURLConfig,
+			logger:   log.NewNopLogger(),
+			sender:   mock,
+		}
+		ctx := notify.WithGroupKey(context.Background(), "alertname")
+		ctx = notify.WithGroupLabels(ctx, model.LabelSet{"alertname": ""})
+		ok, err := sn.Notify(ctx, alerts...)
+		require.NoError(t, err)
+		require.True(t, ok)
+		var sent []*types.Alert
+		require.NoError(t, json.Unmarshal(body, &sent))
+		require.Len(t, sent, 1)
+		require.Equal(t, start, sent[0].StartsAt)
+		require.Equal(t, end, sent[0].EndsAt)
+		require.Equal(t, genURL, sent[0].GeneratorURL)
 	})
 }

@@ -58,6 +58,7 @@ type IntegrationTypeSchema struct {
 	Description    string                     `json:"description,omitempty"`
 	Info           string                     `json:"info,omitempty"`
 	Versions       []IntegrationSchemaVersion `json:"versions"`
+	Deprecated     bool                       `json:"deprecated,omitempty"`
 }
 
 // GetAllTypes returns a list of all types that are mentioned by the schema.
@@ -115,8 +116,21 @@ type IntegrationSchemaVersion struct {
 	Options []Field `json:"options"`
 	// Additional information about the version
 	Info string `json:"info,omitempty"`
+	// Indicates whether the version is deprecated and will be removed in a future release
+	Deprecated bool `json:"deprecated,omitempty"`
 
 	typeSchema *IntegrationTypeSchema
+}
+
+// NewIntegrationSchemaVersion creates an IntegrationSchemaVersion and returns a factory function
+// for use with NewIntegrationTypeSchema.
+func NewIntegrationSchemaVersion(
+	v IntegrationSchemaVersion,
+) func(*IntegrationTypeSchema) IntegrationSchemaVersion {
+	return func(s *IntegrationTypeSchema) IntegrationSchemaVersion {
+		v.typeSchema = s
+		return v
+	}
 }
 
 // GetTypeSchema returns the IntegrationTypeSchema that this version belongs to.
@@ -144,6 +158,11 @@ func (v IntegrationSchemaVersion) GetSecretFieldsPaths() []IntegrationFieldPath 
 func (v IntegrationSchemaVersion) IsSecureField(path IntegrationFieldPath) bool {
 	f, ok := v.GetField(path)
 	return ok && f.Secure
+}
+
+func (v IntegrationSchemaVersion) IsProtectedField(path IntegrationFieldPath) bool {
+	f, ok := v.GetField(path)
+	return ok && f.Protected
 }
 
 func (v IntegrationSchemaVersion) GetField(path IntegrationFieldPath) (Field, bool) {
@@ -183,6 +202,7 @@ type Field struct {
 	SelectOptions  []SelectOption `json:"selectOptions"`
 	ShowWhen       ShowWhen       `json:"showWhen"`
 	Required       bool           `json:"required"`
+	Protected      bool           `json:"protected,omitempty"`
 	ValidationRule string         `json:"validationRule"`
 	Secure         bool           `json:"secure"`
 	DependsOn      string         `json:"dependsOn"`
@@ -222,14 +242,19 @@ type ShowWhen struct {
 	Is    string `json:"is"`
 }
 
-func InitSchema(s IntegrationTypeSchema) IntegrationTypeSchema {
-	for i := range s.Versions {
-		s.Versions[i].typeSchema = &s
+func InitSchema(s IntegrationTypeSchema, versions ...func(schema *IntegrationTypeSchema) IntegrationSchemaVersion) IntegrationTypeSchema {
+	result := s
+	for _, v := range versions {
+		result.Versions = append(result.Versions, v(&result))
 	}
-	return s
+	return result
 }
 
 type IntegrationFieldPath []string
+
+func NewIntegrationFieldPath(segments ...string) IntegrationFieldPath {
+	return segments
+}
 
 func ParseIntegrationPath(path string) IntegrationFieldPath {
 	return strings.Split(path, ".")

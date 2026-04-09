@@ -156,6 +156,170 @@ func TestNotify_IncomingWebhook(t *testing.T) {
 				},
 			},
 		},
+	}, {
+		name: "Message is sent with custom footer",
+		settings: Config{
+			EndpointURL:    APIURL,
+			URL:            "https://example.com/hooks/xxxx",
+			Token:          "",
+			Recipient:      "#test",
+			Text:           templates.DefaultMessageEmbed,
+			Title:          templates.DefaultMessageTitleEmbed,
+			Username:       "Grafana",
+			IconEmoji:      ":emoji:",
+			IconURL:        "",
+			MentionChannel: "",
+			MentionUsers:   nil,
+			MentionGroups:  nil,
+			Color:          templates.DefaultMessageColor,
+			Footer:         "Custom footer: {{ len .Alerts }} alert(s)",
+		},
+		alerts: []*types.Alert{{
+			Alert: model.Alert{
+				Labels:      model.LabelSet{"alertname": "alert1", "lbl1": "val1"},
+				Annotations: model.LabelSet{"ann1": "annv1"},
+			},
+		}},
+		expectedMessage: &slackMessage{
+			Channel:   "#test",
+			Username:  "Grafana",
+			IconEmoji: ":emoji:",
+			Attachments: []attachment{
+				{
+					Title:      "[FIRING:1]  (val1)",
+					TitleLink:  "http://localhost/alerting/list",
+					Text:       "**Firing**\n\nValue: [no value]\nLabels:\n - alertname = alert1\n - lbl1 = val1\nAnnotations:\n - ann1 = annv1\nSilence: http://localhost/alerting/silence/new?alertmanager=grafana&matcher=alertname%3Dalert1&matcher=lbl1%3Dval1\n",
+					Fallback:   "[FIRING:1]  (val1)",
+					Fields:     nil,
+					Footer:     "Custom footer: 1 alert(s)",
+					FooterIcon: "https://grafana.com/static/assets/img/fav32.png",
+					Color:      "#D63232",
+				},
+			},
+		},
+	}, {
+		name: "Message is sent with footer under limit (not truncated)",
+		settings: Config{
+			EndpointURL:    APIURL,
+			URL:            "https://example.com/hooks/xxxx",
+			Token:          "",
+			Recipient:      "#test",
+			Text:           templates.DefaultMessageEmbed,
+			Title:          templates.DefaultMessageTitleEmbed,
+			Username:       "Grafana",
+			IconEmoji:      ":emoji:",
+			IconURL:        "",
+			MentionChannel: "",
+			MentionUsers:   nil,
+			MentionGroups:  nil,
+			Color:          templates.DefaultMessageColor,
+			Footer:         strings.Repeat("a", slackMaxFooterLen-1),
+		},
+		alerts: []*types.Alert{{
+			Alert: model.Alert{
+				Labels:      model.LabelSet{"alertname": "alert1", "lbl1": "val1"},
+				Annotations: model.LabelSet{"ann1": "annv1"},
+			},
+		}},
+		expectedMessage: &slackMessage{
+			Channel:   "#test",
+			Username:  "Grafana",
+			IconEmoji: ":emoji:",
+			Attachments: []attachment{
+				{
+					Title:      "[FIRING:1]  (val1)",
+					TitleLink:  "http://localhost/alerting/list",
+					Text:       "**Firing**\n\nValue: [no value]\nLabels:\n - alertname = alert1\n - lbl1 = val1\nAnnotations:\n - ann1 = annv1\nSilence: http://localhost/alerting/silence/new?alertmanager=grafana&matcher=alertname%3Dalert1&matcher=lbl1%3Dval1\n",
+					Fallback:   "[FIRING:1]  (val1)",
+					Fields:     nil,
+					Footer:     strings.Repeat("a", slackMaxFooterLen-1),
+					FooterIcon: "https://grafana.com/static/assets/img/fav32.png",
+					Color:      "#D63232",
+				},
+			},
+		},
+	}, {
+		name: "Message is sent with footer over limit (truncated)",
+		settings: Config{
+			EndpointURL:    APIURL,
+			URL:            "https://example.com/hooks/xxxx",
+			Token:          "",
+			Recipient:      "#test",
+			Text:           templates.DefaultMessageEmbed,
+			Title:          templates.DefaultMessageTitleEmbed,
+			Username:       "Grafana",
+			IconEmoji:      ":emoji:",
+			IconURL:        "",
+			MentionChannel: "",
+			MentionUsers:   nil,
+			MentionGroups:  nil,
+			Color:          templates.DefaultMessageColor,
+			Footer:         strings.Repeat("a", slackMaxFooterLen+1),
+		},
+		alerts: []*types.Alert{{
+			Alert: model.Alert{
+				Labels:      model.LabelSet{"alertname": "alert1", "lbl1": "val1"},
+				Annotations: model.LabelSet{"ann1": "annv1"},
+			},
+		}},
+		expectedMessage: &slackMessage{
+			Channel:   "#test",
+			Username:  "Grafana",
+			IconEmoji: ":emoji:",
+			Attachments: []attachment{
+				{
+					Title:      "[FIRING:1]  (val1)",
+					TitleLink:  "http://localhost/alerting/list",
+					Text:       "**Firing**\n\nValue: [no value]\nLabels:\n - alertname = alert1\n - lbl1 = val1\nAnnotations:\n - ann1 = annv1\nSilence: http://localhost/alerting/silence/new?alertmanager=grafana&matcher=alertname%3Dalert1&matcher=lbl1%3Dval1\n",
+					Fallback:   "[FIRING:1]  (val1)",
+					Fields:     nil,
+					Footer:     strings.Repeat("a", slackMaxFooterLen-1) + "…",
+					FooterIcon: "https://grafana.com/static/assets/img/fav32.png",
+					Color:      "#D63232",
+				},
+			},
+		},
+	}, {
+		name: "Message is sent with invalid footer template",
+		settings: Config{
+			EndpointURL:    APIURL,
+			URL:            "https://example.com/hooks/xxxx",
+			Token:          "",
+			Recipient:      "#test",
+			Text:           templates.DefaultMessageEmbed,
+			Title:          templates.DefaultMessageTitleEmbed,
+			Username:       "Grafana",
+			IconEmoji:      ":emoji:",
+			IconURL:        "",
+			MentionChannel: "",
+			MentionUsers:   nil,
+			MentionGroups:  nil,
+			Color:          templates.DefaultMessageColor,
+			Footer:         "{{ .InvalidField }}",
+		},
+		alerts: []*types.Alert{{
+			Alert: model.Alert{
+				Labels:      model.LabelSet{"alertname": "alert1", "lbl1": "val1"},
+				Annotations: model.LabelSet{"ann1": "annv1"},
+			},
+		}},
+		expectedMessage: &slackMessage{
+			Channel:   "#test",
+			Username:  "Grafana",
+			IconEmoji: ":emoji:",
+			Attachments: []attachment{
+				{
+					Title:      "[FIRING:1]  (val1)",
+					TitleLink:  "http://localhost/alerting/list",
+					Text:       "**Firing**\n\nValue: [no value]\nLabels:\n - alertname = alert1\n - lbl1 = val1\nAnnotations:\n - ann1 = annv1\nSilence: http://localhost/alerting/silence/new?alertmanager=grafana&matcher=alertname%3Dalert1&matcher=lbl1%3Dval1\n",
+					Fallback:   "[FIRING:1]  (val1)",
+					Fields:     nil,
+					Footer:     "",
+					FooterIcon: "https://grafana.com/static/assets/img/fav32.png",
+					Color:      "#D63232",
+				},
+			},
+		},
 	}}
 
 	for _, test := range tests {
@@ -894,6 +1058,7 @@ func setupSlackForTests(t *testing.T, settings Config) (*Notifier, *slackRequest
 	externalURL, err := url.Parse("http://localhost")
 	require.NoError(t, err)
 	tmpl.ExternalURL = externalURL
+	tmpl.AppVersion = appVersion
 
 	images := images.NewTokenProvider(images.NewFakeTokenStoreFromImages(map[string]*images.Image{
 		"image-on-disk": {
@@ -930,6 +1095,72 @@ func setupSlackForTests(t *testing.T, settings Config) (*Notifier, *slackRequest
 	sn.completeFileUploadFn = sr.recordCompleteFileUpload
 
 	return sn, sr, nil
+}
+
+func TestNotify_ExtraData(t *testing.T) {
+	settings := Config{
+		EndpointURL: APIURL,
+		URL:         APIURL,
+		Token:       "1234",
+		Recipient:   "#test",
+		Text:        `{{ range $i, $a := .Alerts }}Alert {{ $i }}: {{ printf "%s" $a.ExtraData }} {{ end }}`,
+		Title:       templates.DefaultMessageTitleEmbed,
+		Username:    "Grafana",
+		IconEmoji:   ":emoji:",
+		Color:       templates.DefaultMessageColor,
+	}
+
+	notifier, recorder, err := setupSlackForTests(t, settings)
+	require.NoError(t, err)
+
+	// Create test alerts
+	alerts := []*types.Alert{
+		{
+			Alert: model.Alert{
+				Labels:      model.LabelSet{"alertname": "alert1", "lbl1": "val1"},
+				Annotations: model.LabelSet{"ann1": "annv1"},
+			},
+		},
+		{
+			Alert: model.Alert{
+				Labels:      model.LabelSet{"alertname": "alert2", "lbl1": "val2"},
+				Annotations: model.LabelSet{"ann1": "annv2"},
+			},
+		},
+	}
+
+	// Create extra data that will be passed via context
+	extraData1 := json.RawMessage(`{"customField": "customValue1", "priority": "high"}`)
+	extraData2 := json.RawMessage(`{"customField": "customValue2", "priority": "medium"}`)
+	extraDataSlice := []json.RawMessage{extraData1, extraData2}
+
+	// Create context with extra data
+	ctx := notify.WithGroupKey(context.Background(), "alertname")
+	ctx = notify.WithGroupLabels(ctx, model.LabelSet{"alertname": ""})
+	ctx = context.WithValue(ctx, receivers.ExtraDataKey, extraDataSlice)
+
+	// Call Notify
+	ok, err := notifier.Notify(ctx, alerts...)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// Get the request and verify extra data is present in the message
+	require.Equal(t, 1, recorder.requestCount)
+	r := recorder.messageRequest[0]
+
+	b, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+
+	message := slackMessage{}
+	require.NoError(t, json.Unmarshal(b, &message))
+
+	// Slack sends a single attachment with all alerts combined in Text
+	require.GreaterOrEqual(t, len(message.Attachments), 1)
+
+	// The Text field should contain the extra data from both alerts
+	require.Contains(t, message.Attachments[0].Text, "customField")
+	require.Contains(t, message.Attachments[0].Text, "customValue1")
+	require.Contains(t, message.Attachments[0].Text, "customValue2")
 }
 
 func TestSendSlackRequest(t *testing.T) {

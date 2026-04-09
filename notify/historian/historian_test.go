@@ -11,11 +11,6 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	alertingInstrument "github.com/grafana/alerting/http/instrument"
-	"github.com/grafana/alerting/http/instrument/instrumenttest"
-	alertingModels "github.com/grafana/alerting/models"
-	"github.com/grafana/alerting/notify/historian/lokiclient"
-	"github.com/grafana/alerting/notify/nfstatus"
 	"github.com/grafana/dskit/instrument"
 	"github.com/prometheus/alertmanager/types"
 	"github.com/prometheus/client_golang/prometheus"
@@ -23,25 +18,36 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
+
+	alertingInstrument "github.com/grafana/alerting/http/instrument"
+	"github.com/grafana/alerting/http/instrument/instrumenttest"
+	alertingModels "github.com/grafana/alerting/models"
+	"github.com/grafana/alerting/notify/historian/lokiclient"
+	"github.com/grafana/alerting/notify/nfstatus"
 )
 
-const testReceiverName = "testReceiverName"
+const (
+	testReceiverName = "testReceiverName"
+	testUUID         = "00000000-0000-0000-0000-000000000001"
+)
 
 var (
 	testGroupLabels  = model.LabelSet{"foo": "bar"}
+	testGroupKey     = "testGroupKey"
 	testPipelineTime = time.Date(2025, time.July, 15, 16, 55, 0, 0, time.UTC)
 	testNow          = time.Now()
-	testAlerts       = []*types.Alert{
-		{
+	testAlerts       = []nfstatus.NotificationHistoryAlert{{
+		Alert: &types.Alert{
 			Alert: model.Alert{
 				Labels:       model.LabelSet{"alertname": "Alert1", alertingModels.RuleUIDLabel: "testRuleUID"},
-				Annotations:  model.LabelSet{"foo": "bar", "__private__": "baz"},
+				Annotations:  model.LabelSet{"foo": "bar", "__private__": "baz", alertingModels.NamespaceUIDLabel: "testFolderUID"},
 				StartsAt:     testPipelineTime,
 				EndsAt:       testPipelineTime,
 				GeneratorURL: "http://localhost/test",
 			},
 		},
-	}
+		ExtraData: json.RawMessage([]byte(`{"things":["foo","bar"]}`)),
+	}}
 )
 
 func TestRecord(t *testing.T) {
@@ -53,40 +59,66 @@ func TestRecord(t *testing.T) {
 			expected        []lokiclient.Stream
 		}{
 			{
-				"successful notification",
-				false,
-				nil,
-				[]lokiclient.Stream{
+				name:            "successful notification",
+				retry:           false,
+				notificationErr: nil,
+				expected: []lokiclient.Stream{
 					{
 						Stream: map[string]string{
 							"externalLabelKey": "externalLabelValue",
-							"from":             "notify-history",
-							"ruleUID":          "testRuleUID",
+							"from":             "notify-history-events",
 						},
 						Values: []lokiclient.Sample{
 							{
-								T: testNow,
-								V: "{\"schemaVersion\":1,\"receiver\":\"testReceiverName\",\"status\":\"resolved\",\"groupLabels\":{\"foo\":\"bar\"},\"alerts\":[{\"status\":\"resolved\",\"labels\":{\"__alert_rule_uid__\":\"testRuleUID\",\"alertname\":\"Alert1\"},\"annotations\":{\"__private__\":\"baz\",\"foo\":\"bar\"},\"startsAt\":\"2025-07-15T16:55:00Z\",\"endsAt\":\"2025-07-15T16:55:00Z\"}],\"retry\":false,\"duration\":1000,\"pipelineTime\":\"2025-07-15T16:55:00Z\"}",
+								T:        testNow,
+								V:        `{"schemaVersion":2,"uuid":"00000000-0000-0000-0000-000000000001","ruleUIDs":["testRuleUID"],"folderUIDs":["testFolderUID"],"receiver":"testReceiverName","integration":"testIntegrationName","integrationIdx":42,"groupKey":"testGroupKey","status":"resolved","groupLabels":{"foo":"bar"},"alertCount":1,"retry":false,"duration":1000000000,"pipelineTime":"2025-07-15T16:55:00Z"}`,
+								Metadata: map[string]string{"uuid": testUUID, "receiver": testReceiverName, "rule_uids": "testRuleUID", "folder_uids": "testFolderUID"},
+							},
+						},
+					},
+					{
+						Stream: map[string]string{
+							"externalLabelKey": "externalLabelValue",
+							"from":             "notify-history-alerts",
+						},
+						Values: []lokiclient.Sample{
+							{
+								T:        testNow,
+								V:        `{"schemaVersion":2,"uuid":"00000000-0000-0000-0000-000000000001","alertIndex":0,"status":"resolved","labels":{"__alert_rule_uid__":"testRuleUID","alertname":"Alert1"},"annotations":{"__alert_rule_namespace_uid__":"testFolderUID","__private__":"baz","foo":"bar"},"startsAt":"2025-07-15T16:55:00Z","endsAt":"2025-07-15T16:55:00Z","enrichments":{"things":["foo","bar"]}}`,
+								Metadata: map[string]string{"uuid": testUUID, "rule_uid": "testRuleUID", "folder_uid": "testFolderUID"},
 							},
 						},
 					},
 				},
 			},
 			{
-				"failed notification",
-				true,
-				errors.New("test notification error"),
-				[]lokiclient.Stream{
+				name:            "failed notification",
+				retry:           true,
+				notificationErr: errors.New("test notification error"),
+				expected: []lokiclient.Stream{
 					{
 						Stream: map[string]string{
 							"externalLabelKey": "externalLabelValue",
-							"from":             "notify-history",
-							"ruleUID":          "testRuleUID",
+							"from":             "notify-history-events",
 						},
 						Values: []lokiclient.Sample{
 							{
-								T: testNow,
-								V: "{\"schemaVersion\":1,\"receiver\":\"testReceiverName\",\"status\":\"resolved\",\"groupLabels\":{\"foo\":\"bar\"},\"alerts\":[{\"status\":\"resolved\",\"labels\":{\"__alert_rule_uid__\":\"testRuleUID\",\"alertname\":\"Alert1\"},\"annotations\":{\"__private__\":\"baz\",\"foo\":\"bar\"},\"startsAt\":\"2025-07-15T16:55:00Z\",\"endsAt\":\"2025-07-15T16:55:00Z\"}],\"retry\":true,\"error\":\"test notification error\",\"duration\":1000,\"pipelineTime\":\"2025-07-15T16:55:00Z\"}",
+								T:        testNow,
+								V:        `{"schemaVersion":2,"uuid":"00000000-0000-0000-0000-000000000001","ruleUIDs":["testRuleUID"],"folderUIDs":["testFolderUID"],"receiver":"testReceiverName","integration":"testIntegrationName","integrationIdx":42,"groupKey":"testGroupKey","status":"resolved","groupLabels":{"foo":"bar"},"alertCount":1,"retry":true,"error":"test notification error","duration":1000000000,"pipelineTime":"2025-07-15T16:55:00Z"}`,
+								Metadata: map[string]string{"uuid": testUUID, "receiver": testReceiverName, "rule_uids": "testRuleUID", "folder_uids": "testFolderUID"},
+							},
+						},
+					},
+					{
+						Stream: map[string]string{
+							"externalLabelKey": "externalLabelValue",
+							"from":             "notify-history-alerts",
+						},
+						Values: []lokiclient.Sample{
+							{
+								T:        testNow,
+								V:        `{"schemaVersion":2,"uuid":"00000000-0000-0000-0000-000000000001","alertIndex":0,"status":"resolved","labels":{"__alert_rule_uid__":"testRuleUID","alertname":"Alert1"},"annotations":{"__alert_rule_namespace_uid__":"testFolderUID","__private__":"baz","foo":"bar"},"startsAt":"2025-07-15T16:55:00Z","endsAt":"2025-07-15T16:55:00Z","enrichments":{"things":["foo","bar"]}}`,
+								Metadata: map[string]string{"uuid": testUUID, "rule_uid": "testRuleUID", "folder_uid": "testFolderUID"},
 							},
 						},
 					},
@@ -101,11 +133,15 @@ func TestRecord(t *testing.T) {
 
 				h := createTestNotificationHistorian(req, writesTotal, writesFailed)
 				h.Record(context.Background(), nfstatus.NotificationHistoryEntry{
+					UUID:            testUUID,
 					Alerts:          testAlerts,
+					GroupKey:        testGroupKey,
 					Retry:           tc.retry,
 					NotificationErr: tc.notificationErr,
 					Duration:        time.Second,
 					ReceiverName:    testReceiverName,
+					IntegrationName: "testIntegrationName",
+					IntegrationIdx:  42,
 					GroupLabels:     testGroupLabels,
 					PipelineTime:    testPipelineTime,
 				})
@@ -139,7 +175,9 @@ func TestRecord(t *testing.T) {
 		badHistorian := createTestNotificationHistorian(instrumenttest.NewFakeRequester().WithResponse(instrumenttest.BadResponse()), writesTotal, writesFailed)
 
 		nhe := nfstatus.NotificationHistoryEntry{
+			UUID:            testUUID,
 			Alerts:          testAlerts,
+			GroupKey:        testGroupKey,
 			Retry:           false,
 			NotificationErr: nil,
 			Duration:        time.Second,

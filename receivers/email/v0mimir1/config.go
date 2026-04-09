@@ -1,16 +1,133 @@
+// Copyright 2015 Prometheus Team
+// Modifications Copyright Grafana Labs, licensed under AGPL-3.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package v0mimir1
 
 import (
-	"github.com/prometheus/alertmanager/config"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/textproto"
 
+	commoncfg "github.com/prometheus/common/config"
+
+	httpcfg "github.com/grafana/alerting/http/v0mimir"
+	"github.com/grafana/alerting/receivers"
 	"github.com/grafana/alerting/receivers/schema"
 )
 
 const Version = schema.V0mimir1
 
-type Config config.EmailConfig
+// DefaultEmailSubject defines the default Subject header of an Email.
+var DefaultEmailSubject = `{{ template "email.default.subject" . }}`
 
-var Schema = schema.IntegrationSchemaVersion{
+// DefaultConfig defines default values for Email configurations.
+var DefaultConfig = Config{
+	NotifierConfig: receivers.NotifierConfig{
+		VSendResolved: false,
+	},
+	HTML: `{{ template "email.default.html" . }}`,
+	Text: ``,
+}
+
+// Config configures notifications via mail.
+type Config struct {
+	receivers.NotifierConfig `yaml:",inline" json:",inline"`
+
+	// Email address to notify.
+	To               string             `yaml:"to,omitempty" json:"to,omitempty"`
+	From             string             `yaml:"from,omitempty" json:"from,omitempty"`
+	Hello            string             `yaml:"hello,omitempty" json:"hello,omitempty"`
+	Smarthost        receivers.HostPort `yaml:"smarthost,omitempty" json:"smarthost,omitempty"`
+	AuthUsername     string             `yaml:"auth_username,omitempty" json:"auth_username,omitempty"`
+	AuthPassword     receivers.Secret   `yaml:"auth_password,omitempty" json:"auth_password,omitempty"`
+	AuthPasswordFile string             `yaml:"auth_password_file,omitempty" json:"auth_password_file,omitempty"`
+	AuthSecret       receivers.Secret   `yaml:"auth_secret,omitempty" json:"auth_secret,omitempty"`
+	AuthIdentity     string             `yaml:"auth_identity,omitempty" json:"auth_identity,omitempty"`
+	Headers          map[string]string  `yaml:"headers,omitempty" json:"headers,omitempty"`
+	HTML             string             `yaml:"html,omitempty" json:"html,omitempty"`
+	Text             string             `yaml:"text,omitempty" json:"text,omitempty"`
+	RequireTLS       *bool              `yaml:"require_tls,omitempty" json:"require_tls,omitempty"`
+	TLSConfig        httpcfg.TLSConfig  `yaml:"tls_config,omitempty" json:"tls_config,omitempty"`
+}
+
+// UnmarshalYAML implements the yaml.Unmarshaler interface.
+func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	*c = DefaultConfig
+	type plain Config
+	if err := unmarshal((*plain)(c)); err != nil {
+		return err
+	}
+	return c.validate()
+}
+
+// NewConfig creates a Config from raw JSON and a decrypt function for secure fields.
+func NewConfig(jsonData json.RawMessage, decrypt receivers.DecryptFunc) (Config, error) {
+	settings := DefaultConfig
+	if err := json.Unmarshal(jsonData, &settings); err != nil {
+		return Config{}, fmt.Errorf("failed to unmarshal settings: %w", err)
+	}
+	if decrypted, ok := decrypt.DecryptSecret("auth_password"); ok {
+		settings.AuthPassword = decrypted
+	}
+	if decrypted, ok := decrypt.DecryptSecret("auth_secret"); ok {
+		settings.AuthSecret = decrypted
+	}
+	if decrypted, ok := decrypt.GetPath(schema.NewIntegrationFieldPath("tls_config", "key")); ok {
+		settings.TLSConfig.Key = commoncfg.Secret(decrypted)
+	}
+	if err := settings.Validate(); err != nil {
+		return Config{}, err
+	}
+	return settings, nil
+}
+
+func (c *Config) Validate() error {
+	if err := c.validate(); err != nil {
+		return err
+	}
+	if c.Smarthost.String() == "" {
+		return errors.New("missing smarthost in email config")
+	}
+	if c.From == "" {
+		return errors.New("missing from address in email config")
+	}
+	if err := c.TLSConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid tls_config: %w", err)
+	}
+	return nil
+}
+
+func (c *Config) validate() error {
+	if c.To == "" {
+		return errors.New("missing to address in email config")
+	}
+	// Header names are case-insensitive, check for collisions.
+	normalizedHeaders := map[string]string{}
+	for h, v := range c.Headers {
+		normalized := textproto.CanonicalMIMEHeaderKey(h)
+		if _, ok := normalizedHeaders[normalized]; ok {
+			return fmt.Errorf("duplicate header %q in email config", normalized)
+		}
+		normalizedHeaders[normalized] = v
+	}
+	c.Headers = normalizedHeaders
+
+	return nil
+}
+
+var Schema = schema.NewIntegrationSchemaVersion(schema.IntegrationSchemaVersion{
 	Version:   Version,
 	CanCreate: false,
 	Options: []schema.Field{
@@ -81,14 +198,14 @@ var Schema = schema.IntegrationSchemaVersion{
 		{
 			Label:        "Email HTML body",
 			Description:  "The HTML body of the email notification.",
-			Placeholder:  config.DefaultEmailConfig.HTML,
+			Placeholder:  DefaultConfig.HTML,
 			Element:      schema.ElementTypeTextArea,
 			PropertyName: "html",
 		},
 		{
 			Label:        "Email text body",
 			Description:  "The text body of the email notification.",
-			Placeholder:  config.DefaultEmailConfig.Text,
+			Placeholder:  DefaultConfig.Text,
 			Element:      schema.ElementTypeTextArea,
 			PropertyName: "text",
 		},
@@ -98,6 +215,6 @@ var Schema = schema.IntegrationSchemaVersion{
 			Element:      schema.ElementTypeKeyValueMap,
 			PropertyName: "headers",
 		},
-		schema.V0TLSConfigOption("tls_config"),
+		httpcfg.V0TLSConfigOption("tls_config"),
 	},
-}
+})

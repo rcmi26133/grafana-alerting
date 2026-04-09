@@ -1,18 +1,159 @@
+// Copyright 2019 Prometheus Team
+// Modifications Copyright Grafana Labs, licensed under AGPL-3.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package v0mimir1
 
 import (
-	"github.com/prometheus/alertmanager/config"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"text/template"
 
+	"github.com/grafana/alerting/receivers"
+
+	httpcfg "github.com/grafana/alerting/http/v0mimir"
 	"github.com/grafana/alerting/receivers/schema"
 )
 
 const Version = schema.V0mimir1
 
-type Config = config.OpsGenieConfig
+// DefaultConfig defines default values for OpsGenie configurations.
+var DefaultConfig = Config{
+	NotifierConfig: receivers.NotifierConfig{
+		VSendResolved: true,
+	},
+	Message:     `{{ template "opsgenie.default.message" . }}`,
+	Description: `{{ template "opsgenie.default.description" . }}`,
+	Source:      `{{ template "opsgenie.default.source" . }}`,
+}
 
-var Schema = schema.IntegrationSchemaVersion{
-	Version:   Version,
-	CanCreate: false,
+// Config configures notifications via OpsGenie.
+type Config struct {
+	receivers.NotifierConfig `yaml:",inline" json:",inline"`
+
+	HTTPConfig *httpcfg.HTTPClientConfig `yaml:"http_config,omitempty" json:"http_config,omitempty"`
+
+	APIKey       receivers.Secret  `yaml:"api_key,omitempty" json:"api_key,omitempty"`
+	APIKeyFile   string            `yaml:"api_key_file,omitempty" json:"api_key_file,omitempty"`
+	APIURL       *receivers.URL    `yaml:"api_url,omitempty" json:"api_url,omitempty"`
+	Message      string            `yaml:"message,omitempty" json:"message,omitempty"`
+	Description  string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Source       string            `yaml:"source,omitempty" json:"source,omitempty"`
+	Details      map[string]string `yaml:"details,omitempty" json:"details,omitempty"`
+	Entity       string            `yaml:"entity,omitempty" json:"entity,omitempty"`
+	Responders   []Responder       `yaml:"responders,omitempty" json:"responders,omitempty"`
+	Actions      string            `yaml:"actions,omitempty" json:"actions,omitempty"`
+	Tags         string            `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Note         string            `yaml:"note,omitempty" json:"note,omitempty"`
+	Priority     string            `yaml:"priority,omitempty" json:"priority,omitempty"`
+	UpdateAlerts bool              `yaml:"update_alerts,omitempty" json:"update_alerts,omitempty"`
+}
+
+type Responder struct {
+	// One of those 3 should be filled.
+	ID       string `yaml:"id,omitempty" json:"id,omitempty"`
+	Name     string `yaml:"name,omitempty" json:"name,omitempty"`
+	Username string `yaml:"username,omitempty" json:"username,omitempty"`
+
+	// team, user, escalation, schedule etc.
+	Type string `yaml:"type,omitempty" json:"type,omitempty"`
+}
+
+const opsgenieValidTypesRe = `^(team|teams|user|escalation|schedule)$`
+
+var opsgenieTypeMatcher = regexp.MustCompile(opsgenieValidTypesRe)
+
+// UnmarshalYAML implements the yaml.Unmarshaler interface.
+func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	*c = DefaultConfig
+	type plain Config
+	if err := unmarshal((*plain)(c)); err != nil {
+		return err
+	}
+	return c.validate()
+}
+
+// NewConfig creates a Config from raw JSON and a decrypt function for secure fields.
+func NewConfig(jsonData json.RawMessage, decrypt receivers.DecryptFunc) (Config, error) {
+	settings := DefaultConfig
+	var err error
+	if err := json.Unmarshal(jsonData, &settings); err != nil {
+		return Config{}, fmt.Errorf("failed to unmarshal settings: %w", err)
+	}
+	if decrypted, ok := decrypt.DecryptSecret("api_key"); ok {
+		settings.APIKey = decrypted
+	}
+	settings.HTTPConfig, err = httpcfg.DecryptHTTPConfig("http_config", settings.HTTPConfig, decrypt)
+	if err != nil {
+		return Config{}, fmt.Errorf("failed to decrypt http_config: %w", err)
+	}
+	if err := settings.Validate(); err != nil {
+		return Config{}, err
+	}
+	return settings, nil
+}
+
+func (c *Config) Validate() error {
+	if err := c.validate(); err != nil {
+		return err
+	}
+	if c.APIURL == nil {
+		return errors.New("missing api_url in opsgenie config")
+	}
+	if c.APIKey == "" {
+		return errors.New("missing api_key in opsgenie config")
+	}
+	if c.HTTPConfig != nil {
+		if err := c.HTTPConfig.Validate(); err != nil {
+			return fmt.Errorf("invalid http_config: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validate() error {
+	if c.APIKey != "" && len(c.APIKeyFile) > 0 {
+		return errors.New("at most one of api_key & api_key_file must be configured")
+	}
+
+	for _, r := range c.Responders {
+		if r.ID == "" && r.Username == "" && r.Name == "" {
+			return fmt.Errorf("opsGenieConfig responder %v has to have at least one of id, username or name specified", r)
+		}
+
+		if strings.Contains(r.Type, "{{") {
+			_, err := template.New("").Parse(r.Type)
+			if err != nil {
+				return fmt.Errorf("opsGenieConfig responder %v type is not a valid template: %w", r, err)
+			}
+		} else {
+			r.Type = strings.ToLower(r.Type)
+			if !opsgenieTypeMatcher.MatchString(r.Type) {
+				return fmt.Errorf("opsGenieConfig responder %v type does not match valid options %s", r, opsgenieValidTypesRe)
+			}
+		}
+	}
+
+	return nil
+}
+
+var Schema = schema.NewIntegrationSchemaVersion(schema.IntegrationSchemaVersion{
+	Version:    Version,
+	CanCreate:  false,
+	Deprecated: true,
 	Options: []schema.Field{
 		{
 			Label:        "API key",
@@ -34,7 +175,7 @@ var Schema = schema.IntegrationSchemaVersion{
 		{
 			Label:        "Message",
 			Description:  "Alert text limited to 130 characters.",
-			Placeholder:  config.DefaultOpsGenieConfig.Message,
+			Placeholder:  DefaultConfig.Message,
 			Element:      schema.ElementTypeInput,
 			InputType:    schema.InputTypeText,
 			PropertyName: "message",
@@ -42,7 +183,7 @@ var Schema = schema.IntegrationSchemaVersion{
 		{
 			Label:        "Description",
 			Description:  "A description of the incident.",
-			Placeholder:  config.DefaultOpsGenieConfig.Description,
+			Placeholder:  DefaultConfig.Description,
 			Element:      schema.ElementTypeInput,
 			InputType:    schema.InputTypeText,
 			PropertyName: "description",
@@ -50,7 +191,7 @@ var Schema = schema.IntegrationSchemaVersion{
 		{
 			Label:        "Source",
 			Description:  "A backlink to the sender of the notification.",
-			Placeholder:  config.DefaultOpsGenieConfig.Source,
+			Placeholder:  DefaultConfig.Source,
 			Element:      schema.ElementTypeInput,
 			InputType:    schema.InputTypeText,
 			PropertyName: "source",
@@ -138,6 +279,6 @@ var Schema = schema.IntegrationSchemaVersion{
 				},
 			},
 		},
-		schema.V0HttpConfigOption(),
+		httpcfg.V0HttpConfigOption(),
 	},
-}
+})

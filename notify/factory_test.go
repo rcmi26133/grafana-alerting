@@ -12,17 +12,18 @@ import (
 	"github.com/go-kit/log"
 	"github.com/stretchr/testify/require"
 
-	"github.com/prometheus/alertmanager/config"
-	commoncfg "github.com/prometheus/common/config"
-
 	"github.com/prometheus/alertmanager/notify"
 
 	"github.com/grafana/alerting/definition"
 	"github.com/grafana/alerting/http"
+	"github.com/grafana/alerting/http/v0mimir"
+	"github.com/grafana/alerting/http/v0mimir/v0mimirtest"
 	"github.com/grafana/alerting/images"
 	"github.com/grafana/alerting/models"
+	"github.com/grafana/alerting/notify/nfstatus"
 	"github.com/grafana/alerting/notify/notifytest"
 	"github.com/grafana/alerting/receivers"
+	webhook_v0mimir1 "github.com/grafana/alerting/receivers/webhook/v0mimir1"
 	"github.com/grafana/alerting/templates"
 )
 
@@ -34,7 +35,7 @@ func TestBuildReceiverIntegrations(t *testing.T) {
 
 	emailService := receivers.MockNotificationService()
 
-	noopWrapper := func(_ string, n Notifier) Notifier {
+	noopWrapper := func(_ string, n nfstatus.Notifier) nfstatus.Notifier {
 		return n
 	}
 
@@ -45,6 +46,7 @@ func TestBuildReceiverIntegrations(t *testing.T) {
 		}
 		parsed, err := BuildReceiverConfiguration(context.Background(), recCfg, DecodeSecretsFromBase64, GetDecryptedValueFnForTesting)
 		require.NoError(t, err)
+		parsed.WebhookConfigs[0].Settings.URL = "http://localhost:8080" // to make sure Notify test works
 		return parsed, len(recCfg.Integrations)
 	}
 
@@ -52,7 +54,7 @@ func TestBuildReceiverIntegrations(t *testing.T) {
 		fullCfg, qty := getFullConfig(t)
 
 		wrapped := 0
-		notifyWrapper := func(_ string, n Notifier) Notifier {
+		notifyWrapper := func(_ string, n nfstatus.Notifier) nfstatus.Notifier {
 			wrapped++
 			return n
 		}
@@ -130,7 +132,9 @@ func TestBuildReceiversIntegrations(t *testing.T) {
 	var orgID = rand.Int63()
 	var version = fmt.Sprintf("Grafana v%d", rand.Uint32())
 	imageProvider := &images.URLProvider{}
-	tmpl, err := templates.NewFactory(nil, log.NewNopLogger(), "http://localhost", "grafana")
+	cfg, err := templates.NewConfig("grafana", "http://localhost", "", templates.DefaultLimits)
+	require.NoError(t, err)
+	tmpl, err := templates.NewFactory(nil, cfg, log.NewNopLogger())
 	require.NoError(t, err)
 	emailService := receivers.MockNotificationService()
 
@@ -139,9 +143,9 @@ func TestBuildReceiversIntegrations(t *testing.T) {
 			{
 				ConfigReceiver: ConfigReceiver{
 					Name: "test1",
-					WebhookConfigs: []*config.WebhookConfig{
+					WebhookConfigs: []*webhook_v0mimir1.Config{
 						{
-							HTTPConfig: &commoncfg.DefaultHTTPClientConfig,
+							HTTPConfig: &v0mimir.DefaultHTTPClientConfig,
 						},
 					},
 				},
@@ -167,7 +171,7 @@ func TestBuildReceiversIntegrations(t *testing.T) {
 			DecodeSecretsFromBase64,
 			emailService,
 			nil,
-			func(_ string, n notify.Notifier) notify.Notifier {
+			func(_ string, n nfstatus.Notifier) nfstatus.Notifier {
 				return n
 			},
 			version,
@@ -214,7 +218,7 @@ func TestBuildReceiversIntegrations(t *testing.T) {
 			DecodeSecretsFromBase64,
 			emailService,
 			nil,
-			func(_ string, n notify.Notifier) notify.Notifier {
+			func(_ string, n nfstatus.Notifier) nfstatus.Notifier {
 				return n
 			},
 			version,
@@ -230,13 +234,15 @@ func TestBuildReceiversIntegrations(t *testing.T) {
 }
 
 func TestBuildPrometheusReceiverIntegrations(t *testing.T) {
-	receiver, err := notifytest.GetMimirReceiverWithAllIntegrations(notifytest.WithTLS, notifytest.WithAuthorization, notifytest.WithOAuth2)
+	receiver, err := notifytest.GetMimirReceiverWithAllIntegrations(v0mimirtest.WithTLS, v0mimirtest.WithAuthorization, v0mimirtest.WithOAuth2)
 	require.NoError(t, err)
 	err = definition.ValidateAlertmanagerConfig(receiver)
 	require.NoError(t, err)
-	tmpl, err := templates.NewFactory(nil, log.NewNopLogger(), "http://localhost", "1")
+	cfg, err := templates.NewConfig("1", "http://localhost", "", templates.DefaultLimits)
+	require.NoError(t, err)
+	tmpl, err := templates.NewFactory(nil, cfg, log.NewNopLogger())
 	require.NoError(t, err)
 	integrations, err := BuildPrometheusReceiverIntegrations(receiver, tmpl, nil, log.NewNopLogger(), NoWrap, nil)
 	require.NoError(t, err)
-	require.Len(t, integrations, 14)
+	require.Len(t, integrations, 15)
 }

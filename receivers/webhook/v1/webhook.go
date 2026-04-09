@@ -90,15 +90,8 @@ func (wn *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error
 		state = string(receivers.AlertStateAlerting)
 	}
 
-	// Augment extended Alert data with any extra data if provided
-	// If there is no extra data in the context or it is malformed,
-	// we simply continue without erroring
-	extraData, ok := receivers.GetExtraDataFromContext(ctx)
-	if ok && len(data.Alerts) == len(extraData) {
-		for i, ed := range extraData {
-			data.Alerts[i].ExtraData = ed
-		}
-	}
+	// Augment extended Alert data with any extra data if provided.
+	receivers.ApplyExtraData(ctx, data.Alerts)
 
 	// Provide variables to the template for use in the custom payload.
 	for k, v := range wn.settings.Payload.Vars {
@@ -155,6 +148,11 @@ func (wn *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error
 		if tlsConfig, err = wn.settings.TLSConfig.ToCryptoTLSConfig(); err != nil {
 			return false, err
 		}
+	}
+
+	if parsedURL == NoopURL {
+		level.Debug(l).Log("msg", "skipping webhook notification, URL is set to noop")
+		return true, nil
 	}
 
 	cmd := &receivers.SendWebhookSettings{

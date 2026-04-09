@@ -60,7 +60,7 @@ func NewConfig(jsonData json.RawMessage, decryptFn receivers.DecryptFunc) (Confi
 		return Config{}, fmt.Errorf("failed to unmarshal settings: %w", err)
 	}
 
-	raw.APIKey = decryptFn("apiKey", raw.APIKey)
+	raw.APIKey = decryptFn.Get("apiKey", raw.APIKey)
 	if raw.APIKey == "" {
 		return Config{}, errors.New("could not find api key property in settings")
 	}
@@ -128,9 +128,10 @@ func NewConfig(jsonData json.RawMessage, decryptFn receivers.DecryptFunc) (Confi
 	}, nil
 }
 
-var Schema = schema.IntegrationSchemaVersion{
-	Version:   Version,
-	CanCreate: true,
+var Schema = schema.NewIntegrationSchemaVersion(schema.IntegrationSchemaVersion{
+	Version:    Version,
+	CanCreate:  true,
+	Deprecated: false,
 	Options: []schema.Field{
 		{
 			Label:        "API Key",
@@ -148,6 +149,7 @@ var Schema = schema.IntegrationSchemaVersion{
 			Placeholder:  "https://api.opsgenie.com/v2/alerts",
 			PropertyName: "apiUrl",
 			Required:     true,
+			Protected:    true,
 		},
 		{
 			Label:        "Message",
@@ -229,4 +231,4 @@ var Schema = schema.IntegrationSchemaVersion{
 			},
 		},
 	},
-}
+})

@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/go-openapi/strfmt"
-	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/types"
 	"github.com/prometheus/common/model"
 
+	"github.com/grafana/alerting/definition"
 	"github.com/grafana/alerting/models"
 	"github.com/grafana/alerting/notify/nfstatus"
 )
@@ -36,7 +36,7 @@ func TestIntegration(ctx context.Context,
 	tmplProvider TemplatesProvider,
 ) (models.IntegrationStatus, error) {
 	nf, err := buildIntegrationsFunc(&APIReceiver{
-		ConfigReceiver: config.Receiver{
+		ConfigReceiver: definition.Receiver{
 			Name: receiverName,
 		},
 		ReceiverConfig: models.ReceiverConfig{
@@ -61,6 +61,7 @@ func TestIntegration(ctx context.Context,
 }
 
 func TestNotifier(ctx context.Context, notifier *nfstatus.Integration, testAlert types.Alert, now time.Time) error {
+	ctx = context.WithValue(ctx, nfstatus.TestNotificationKey, true)
 	ctx = notify.WithGroupKey(ctx, fmt.Sprintf("%s-%s-%d", notifier.Name(), testAlert.Labels.Fingerprint(), now.Unix()))
 	ctx = notify.WithGroupLabels(ctx, testAlert.Labels)
 	ctx = notify.WithReceiverName(ctx, notifier.Name())
